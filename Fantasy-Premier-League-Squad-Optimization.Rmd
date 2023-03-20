@@ -1,0 +1,219 @@
+---
+title: "Squad Optimization in R"
+author: "Kawnain Ahmed Chowdhury"
+date: "2023-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+<br> I scrapped data from the FPL website.    
+```{r}
+library(jsonlite)
+library(httr)
+library(magrittr)
+
+
+
+fpl_get <- GET("https://fantasy.premierleague.com/api/bootstrap-static/")
+
+fpl_json <- jsonlite::fromJSON(content(fpl_get, as = "text")) 
+
+getwd()
+
+
+fpl_save <- fpl_json$elements
+
+
+```
+
+```{r}
+#fpl_excel <- write.xlsx(df,"F:/MSBA/Personal Project/fpl_excel.xlsx")
+
+```
+
+<br> Converted the data to excel and saved. Since the data changes everyday, I saved it in excel to not worry about any changes happening. 
+```{r}
+#library(openxlsx)
+#fpl_save <- read.xlsx("fpl_excel.xlsx")
+```
+
+<br> Just like the players data, I saved the teams data. 
+```{r}
+fpl_teams_excel <- fpl_json$teams
+
+#fpl_teams_excel <- write.xlsx(fpl_teams_Df,"F:/MSBA/Personal Project/fpl_teams_excel.xlsx")
+
+
+
+#fpl_teams_excel <- read.xlsx("fpl_teams_excel.xlsx")
+
+```
+
+#Data Cleaning
+
+<br> This is my dependent variable, so I converted it to numeric before analysis. 
+```{r}
+fpl_save$ep_next <- as.numeric(fpl_save$ep_next[1:length(fpl_save$ep_next)])
+```
+
+<br> Innerjoined the team data with the squad data and changed the element types to its actual positions. 
+```{r}
+library(tidyverse)
+fpl_save$playerid <- fpl_save$id
+
+fpl_save$id <- fpl_save$team
+
+fpl_final <- fpl_save %>% 
+              inner_join(fpl_teams_excel, by = "id")
+
+fpl_final$element_type <- ifelse(fpl_final$element_type == "1", "GK", fpl_final$element_type)
+
+fpl_final$element_type <- ifelse(fpl_final$element_type == "2", "DF", fpl_final$element_type)
+
+fpl_final$element_type <- ifelse(fpl_final$element_type == "3", "MF", fpl_final$element_type)
+
+fpl_final$element_type <- ifelse(fpl_final$element_type == "4", "ST", fpl_final$element_type)
+
+
+
+```
+
+#Final_Dataset
+
+<br> Because of my constraints, I had to create dummy variables of the team names and positions. 
+```{r}
+library(fastDummies)
+library(dplyr)
+
+fpl_save_opt1 <- data.frame(player_index = rep(1:nrow(fpl_final)),
+                            player = fpl_final$web_name, 
+                            player_position = fpl_final$element_type,
+                            team_name = fpl_final$short_name,
+                            player_cost = fpl_final$now_cost,
+                            player_expected_points = fpl_final$ep_next)
+
+
+fpl_save_final <- fastDummies::dummy_cols(fpl_save_opt1, select_columns = c("player_position", "team_name"))
+
+```
+
+<br> I did my optimization here and put it under a function to use it for my Shiny app later on. 
+```{r}
+library(ROI)
+
+optimization <- function(value) {
+
+squad_value <- as.integer(value)
+  
+  c_vec <- fpl_save_final$player_expected_points
+
+Amat <- rbind(rep(1,nrow(fpl_save_final)),
+        fpl_save_final$player_position_GK,
+        fpl_save_final$player_position_DF,
+        fpl_save_final$player_position_MF,
+        fpl_save_final$player_position_ST,
+        fpl_save_final$player_cost,
+        fpl_save_final$team_name_ARS,
+        fpl_save_final$team_name_AVL,
+        fpl_save_final$team_name_BHA,
+        fpl_save_final$team_name_BOU,
+        fpl_save_final$team_name_BRE,
+        fpl_save_final$team_name_CHE,
+        fpl_save_final$team_name_CRY,
+        fpl_save_final$team_name_EVE,
+        fpl_save_final$team_name_FUL,
+        fpl_save_final$team_name_LEE,
+        fpl_save_final$team_name_LEI,
+        fpl_save_final$team_name_LIV,
+        fpl_save_final$team_name_MCI,
+        fpl_save_final$team_name_MUN,
+        fpl_save_final$team_name_NEW,
+        fpl_save_final$team_name_NFO,
+        fpl_save_final$team_name_SOU,
+        fpl_save_final$team_name_TOT,
+        fpl_save_final$team_name_WHU,
+        fpl_save_final$team_name_WOL,
+        diag(1,nrow(fpl_save_final)))
+
+
+b_vec <- c(15,2,5,5,3,squad_value,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,rep(1,nrow(fpl_save_final)))
+
+model <- OP(c_vec,L_constraint(Amat, c("==","==","==","==","==","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=","<=",rep("<=", nrow(fpl_save_final))), b_vec),maximum = TRUE)
+
+fpl_roi  <-  ROI_solve(model)
+
+fpl_roi$solution
+
+Team_fpl_index <- array(dim = 11)
+
+k <- 1
+for (i in which(fpl_roi$solution > 0)){
+  
+  Team_fpl_index[k]<- fpl_save_final$player_index[i]
+  k=k+1
+
+}
+Team_fpl_index <- data.frame(player_index = Team_fpl_index)
+
+Team_fpl <- fpl_save_final %>% 
+            inner_join(Team_fpl_index, by = "player_index") %>% 
+            select(player,player_position,player_cost,team_name,player_expected_points)
+
+
+  return (Team_fpl)
+}
+
+```
+
+```{r}
+library(shiny)
+library(dplyr)
+library(ggplot2)
+library(leaflet)
+library(stringr)
+library(DT)
+```
+
+
+The Shiny app is interactive as it allows you to select your budget. It will then be automated into the optimization done above. This has resulted in the change in squads based on the changes in budgets. 
+```{r}
+
+sequence <- seq(960,1200,1)
+
+library(shiny)
+library(DT)
+
+
+ui <- fluidPage(
+  fluidRow(br(),
+  column(5,
+         selectInput("Budget",
+                     "Budget:",
+                     choices = sequence)),
+  column(3, actionButton("compute", label = "Display"))
+  ),
+  fluidRow(
+    column(12, DTOutput("Team_fpl"))
+  )
+)
+
+
+server <- function(input, output) {
+  
+  optimize <- eventReactive(input$compute, {
+    optimization(value = input$Budget)
+  })
+  
+  output$Team_fpl <- renderDT(optimize())
+}
+
+# Run app
+shinyApp(ui, server)
+
+```
+
+## Reminder: The above Shiny app is static. Please run all the code chunks in RMD and then access the shiny app.
